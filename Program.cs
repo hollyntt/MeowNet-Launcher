@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -20,6 +21,7 @@ namespace MeowNet_Launcher
         private static string _status = "Environment ready.";
         private static bool _isError = false;
         private static bool _hasPatch = false;
+        private static bool _wasRunning = false;
         private static float _animTime = 0f;
         private static readonly Vector4 MeowPink = new Vector4(1.00f, 0.27f, 0.43f, 1f);
 
@@ -40,10 +42,25 @@ namespace MeowNet_Launcher
             while (!Raylib.WindowShouldClose())
             {
                 _animTime += Raylib.GetFrameTime();
+                
+                bool isRunning = Process.GetProcessesByName("RecRoom").Length > 0;
+                if (isRunning != _wasRunning)
+                {
+                    if (isRunning)
+                    {
+                        Raylib.MinimizeWindow();
+                    }
+                    else
+                    {
+                        Raylib.RestoreWindow();
+                    }
+                    _wasRunning = isRunning;
+                }
+
                 Raylib.BeginDrawing();
                 Raylib.ClearBackground(new Color(26, 26, 36, 255));
                 rlImGui.Begin();
-                DrawMeowUI();
+                DrawMeowUI(isRunning);
                 rlImGui.End();
                 Raylib.EndDrawing();
             }
@@ -100,7 +117,10 @@ namespace MeowNet_Launcher
         private static unsafe void LoadEmbeddedIcon()
         {
             var assembly = Assembly.GetExecutingAssembly();
-            string resourceName = "MeowNet_Launcher.meow.png";
+            string[] names = assembly.GetManifestResourceNames();
+            string resourceName = names.FirstOrDefault(n => n.EndsWith("meow.png"));
+            if (resourceName == null) return;
+
             using Stream stream = assembly.GetManifestResourceStream(resourceName);
             if (stream == null) return;
 
@@ -112,17 +132,20 @@ namespace MeowNet_Launcher
                 fixed (byte* pExt = ext)
                 {
                     Image img = Raylib.LoadImageFromMemory((sbyte*)pExt, pData, data.Length);
-                    if ((IntPtr)img.Data != IntPtr.Zero) { Raylib.SetWindowIcon(img); Raylib.UnloadImage(img); }
+                    if ((IntPtr)img.Data != IntPtr.Zero) 
+                    { 
+                        Raylib.SetWindowIcon(img); 
+                        Raylib.UnloadImage(img); 
+                    }
                 }
             }
         }
 
-        private static void DrawMeowUI()
+        private static void DrawMeowUI(bool isRunning)
         {
             ImGui.SetNextWindowPos(Vector2.Zero);
             ImGui.SetNextWindowSize(new Vector2(Raylib.GetScreenWidth(), Raylib.GetScreenHeight()));
             
-            bool isRunning = Process.GetProcessesByName("RecRoom").Length > 0;
             UpdateTitleBarStyle(isRunning);
 
             ImGui.Begin("MeowNet Launcher", ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse);
@@ -148,8 +171,20 @@ namespace MeowNet_Launcher
                 ImGui.PushStyleColor(ImGuiCol.ButtonHovered, MeowPink);
                 if (ImGui.Button("Launch MeowNet", new Vector2(ImGui.GetContentRegionAvail().X, 50)))
                 {
-                    if (_hasPatch) LaunchGame();
-                    else { _status = "Error: WoofPatch not found!"; _isError = true; }
+                    if (!_hasPatch)
+                    {
+                        _status = "Error: WoofPatch not found!";
+                        _isError = true;
+                    }
+                    else if (!IsSteamRunning())
+                    {
+                        _status = "Error: Steam is not running! Open Steam first.";
+                        _isError = true;
+                    }
+                    else
+                    {
+                        LaunchGame();
+                    }
                 }
                 ImGui.PopStyleColor(2);
             }
@@ -197,6 +232,11 @@ namespace MeowNet_Launcher
             style.Colors[(int)ImGuiCol.Separator] = MeowPink;
         }
 
+        private static bool IsSteamRunning()
+        {
+            return Process.GetProcessesByName("steam").Length > 0;
+        }
+
         private static void KillRecRoom()
         {
             foreach (var p in Process.GetProcessesByName("RecRoom")) { p.Kill(); p.WaitForExit(); }
@@ -210,6 +250,7 @@ namespace MeowNet_Launcher
                 bool isVr = Process.GetProcessesByName("vrserver").Length > 0 || Process.GetProcessesByName("OVRServer_x64").Length > 0;
                 Process.Start(new ProcessStartInfo(Path.Combine(_gameDir, "RecRoom.exe")) { Arguments = $"+forcemode:{(isVr ? "vr" : "screen")}", WorkingDirectory = _gameDir });
                 _status = "Launched! Stay pawsome.";
+                _isError = false;
             } catch (Exception ex) { _status = $"Error: {ex.Message}"; _isError = true; }
         }
     }
