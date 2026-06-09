@@ -3,3 +3,6 @@
 
 hi this is just a launcher for meownet, it doesn't include autoupdates, installing game, and a embedded website since its not at that level yet
 but it will get there.
+
+based off:
+- https://github.com/hollyntt/RecRoom-Revival-Launcher
