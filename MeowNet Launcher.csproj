@@ -8,6 +8,7 @@
         <Nullable>enable</Nullable>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <UseWindowsForms>false</UseWindowsForms>
+        <ApplicationIcon>meow.ico</ApplicationIcon>
     </PropertyGroup>
     
     <PropertyGroup Condition="$([MSBuild]::IsOsPlatform('Windows'))">
@@ -20,6 +21,11 @@
       <PackageReference Include="rlImgui-cs" Version="3.2.0" />
       <PackageReference Include="SteamVR_HUDCenter" Version="0.0.0.2" />
       <PackageReference Include="Valve" Version="1.0.0" />
+    </ItemGroup>
+    
+    <ItemGroup>
+      <None Remove="meow.png" />
+      <EmbeddedResource Include="meow.png" />
     </ItemGroup>
 
 </Project>

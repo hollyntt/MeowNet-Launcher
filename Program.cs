@@ -1,70 +1,85 @@
-﻿using System.Diagnostics;
-using System.Numerics;
+﻿using System;
+using System.Diagnostics;
 using System.IO;
+using System.Numerics;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using ImGuiNET;
 using Raylib_cs;
-using RecRoomLauncher;
 using rlImGui_cs;
-using Valve.VR; // ✔ HUDCenter provides this namespace
 
 namespace MeowNet_Launcher
 {
     class Program
     {
-        private static string gameDir = @"C:\Program Files (x86)\Steam\steamapps\common\RecRoom - Meow";
-        private static string revivalExe = "RecRoom.exe";
+        [DllImport("kernel32.dll")]
+        private static extern bool FreeConsole();
 
-        private static Vector4 meowPink = new Vector4(1.00f, 0.27f, 0.43f, 1f);
+        private static string _gameDir = "";
+        private static string _status = "Environment ready.";
+        private static bool _isError = false;
+        private static bool _hasPatch = false;
+        private static float _animTime = 0f;
+        private static readonly Vector4 MeowPink = new Vector4(1.00f, 0.27f, 0.43f, 1f);
 
-        private static string statusMessage = "";
-        private static bool statusIsError = false;
+        private static unsafe void LoadEmbeddedIcon()
+        {
+            var assembly = Assembly.GetExecutingAssembly();
+    
+            // We get the list of resources to see exactly what the name is in the compiled EXE
+            string[] names = assembly.GetManifestResourceNames();
+            string? resourceName = names.FirstOrDefault(n => n.EndsWith("meow.png"));
 
-        private static bool vrDetected = false;
+            if (resourceName == null) return;
 
-        // Animation timer
-        private static float animTime = 0f;
+            using (Stream stream = assembly.GetManifestResourceStream(resourceName))
+            {
+                if (stream == null) return;
 
-        // Dashboard guard
-        private static bool dashboardOpened = false;
+                byte[] data = new byte[stream.Length];
+                stream.Read(data, 0, data.Length);
 
+                fixed (byte* pData = data)
+                {
+                    byte[] extBytes = System.Text.Encoding.ASCII.GetBytes(".png\0");
+                    fixed (byte* pExt = extBytes)
+                    {
+                        Image img = Raylib.LoadImageFromMemory((sbyte*)pExt, pData, data.Length);
+                        if (img.Data != (void*)IntPtr.Zero)
+                        {
+                            Raylib.SetWindowIcon(img);
+                            Raylib.UnloadImage(img);
+                        }
+                    }
+                }
+            }
+        }
+        
         static void Main()
         {
-            DetectVR();
-            CheckIntegrity();
+            HideConsoleInRelease();
+            
+            FindGameDirectory();
+            _hasPatch = CheckForWoofPatch();
 
-#if RELEASE
-            unsafe { Raylib.SetTraceLogCallback(&NativeMethods.RaylibLogCallback); }
-            Raylib.SetTraceLogLevel(TraceLogLevel.None);
-            Console.SetOut(TextWriter.Null);
-            Console.SetError(TextWriter.Null);
-
-#if WINDOWS_BUILD
-            NativeMethods.FreeConsole();
-#endif
-#endif
-
-            Raylib.InitWindow(720, 520, "MeowNet Launcher");
+            Raylib.InitWindow(720, 520, "");
+            LoadEmbeddedIcon();
             Raylib.SetTargetFPS(60);
             rlImGui.Setup(true);
 
-            SetupStyle();
+            ApplyMeowStyle();
 
-            while (true)
+            while (!Raylib.WindowShouldClose())
             {
-                if (Raylib.WindowShouldClose())
-                    break;
-
-                // Auto-open SteamVR dashboard logic
-                if (vrDetected)
-                    TryOpenSteamVRDashboard();
-
+                _animTime += Raylib.GetFrameTime();
+                
                 Raylib.BeginDrawing();
                 Raylib.ClearBackground(new Color(26, 26, 36, 255));
-
                 rlImGui.Begin();
-                DrawUI();
+                
+                DrawMeowUI();
+                
                 rlImGui.End();
-
                 Raylib.EndDrawing();
             }
 
@@ -72,227 +87,123 @@ namespace MeowNet_Launcher
             Raylib.CloseWindow();
         }
 
-        // Detect if Rec Room is running
-        private static bool IsRecRoomRunning()
+        [Conditional("RELEASE")]
+        private static void HideConsoleInRelease() => FreeConsole();
+
+        private static void FindGameDirectory()
         {
-            return Process.GetProcessesByName("RecRoom").Length > 0 ||
-                   Process.GetProcessesByName("RecRoom.exe").Length > 0;
+            _gameDir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName) ?? "";
         }
 
-        // Auto-open SteamVR dashboard (after SteamVR loads, only if Rec Room not running)
-        private static void TryOpenSteamVRDashboard()
+        private static bool CheckForWoofPatch()
         {
-            if (dashboardOpened)
-                return;
-
-            // Rec Room must NOT be running
-            if (IsRecRoomRunning())
-                return;
-
-            // SteamVR must be fully running
-            bool steamvrRunning =
-                Process.GetProcessesByName("vrserver").Length > 0 &&
-                Process.GetProcessesByName("vrcompositor").Length > 0;
-
-            if (!steamvrRunning)
-                return;
-
-            // Initialize OpenVR
-            EVRInitError err = EVRInitError.None;
-            OpenVR.Init(ref err, EVRApplicationType.VRApplication_Utility);
-
-            if (err != EVRInitError.None)
-                return;
-
-            // Open dashboard silently
-            OpenVR.Applications.LaunchDashboardOverlay("system.dashboard");
-
-            dashboardOpened = true;
+            string pluginPath = Path.Combine(_gameDir, "BepInEx", "plugins", "WoofPatch.dll");
+            if (!File.Exists(pluginPath))
+            {
+                _status = "WoofPatch Missing!";
+                _isError = true;
+                return false;
+            }
+            _status = "WoofPatch detected!";
+            return true;
         }
 
-        // Main UI (ImGui title bar shows status + animated color)
-        private static void DrawUI()
+        private static void DrawMeowUI()
         {
-            int screenW = Raylib.GetScreenWidth();
-            int screenH = Raylib.GetScreenHeight();
+            ImGui.SetNextWindowPos(Vector2.Zero);
+            ImGui.SetNextWindowSize(new Vector2(Raylib.GetScreenWidth(), Raylib.GetScreenHeight()));
+            
+            bool isRunning = Process.GetProcessesByName("RecRoom").Length > 0;
+            UpdateTitleBarStyle(isRunning);
 
-            ImGui.SetNextWindowPos(new Vector2(0, 0));
-            ImGui.SetNextWindowSize(new Vector2(screenW, screenH));
+            ImGui.Begin("MeowNet Launcher", ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse);
 
-            // STATUS
-            bool running = IsRecRoomRunning();
-            string rrStatus = running ? "Running" : "Not Running";
-
-            // ANIMATION
-            animTime += Raylib.GetFrameTime();
-            float pulse = (float)(0.5f + 0.5f * Math.Sin(animTime * 3));
-
-            // TITLE BAR COLOR OVERRIDE
-            var colors = ImGui.GetStyle().Colors;
-
-            if (running)
-            {
-                // Pulse between dark green and bright green
-                colors[(int)ImGuiCol.TitleBg] = new Vector4(
-                    0.10f + pulse * 0.20f,
-                    0.40f + pulse * 0.20f,
-                    0.10f,
-                    1f
-                );
-
-                colors[(int)ImGuiCol.TitleBgActive] = new Vector4(
-                    0.15f + pulse * 0.25f,
-                    0.55f + pulse * 0.25f,
-                    0.15f,
-                    1f
-                );
-            }
-            else
-            {
-                // Static red when not running
-                colors[(int)ImGuiCol.TitleBg] = new Vector4(0.40f, 0.10f, 0.10f, 1f);
-                colors[(int)ImGuiCol.TitleBgActive] = new Vector4(0.55f, 0.15f, 0.15f, 1f);
-            }
-
-            // Dynamic ImGui title bar text
-            ImGui.Begin($"MeowNet Launcher - Rec Room: {rrStatus}",
-                ImGuiWindowFlags.NoResize |
-                ImGuiWindowFlags.NoCollapse);
-
-            ImGui.TextDisabled("Game folder:");
-            ImGui.SameLine(110);
-            ImGui.TextWrapped(gameDir);
-
+            ImGui.TextDisabled("Game Path:");
+            ImGui.TextWrapped(_gameDir);
+    
             ImGui.Spacing();
-            ImGui.TextDisabled("VR Status:");
-            ImGui.SameLine(110);
-            ImGui.Text(vrDetected ? "VR Detected" : "No VR");
+            ImGui.TextDisabled("WoofPatch Status:");
+            ImGui.SameLine(130);
+            ImGui.TextColored(_hasPatch ? new Vector4(0.5f, 1f, 0.5f, 1f) : MeowPink, 
+                _hasPatch ? "Patch Detected" : "WoofPatch Missing!");
 
-            ImGui.Dummy(new Vector2(0, 14));
-            ImGui.Separator();
-            ImGui.Dummy(new Vector2(0, 10));
+            ImGui.Dummy(new Vector2(0, 20));
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.20f, 0.10f, 0.15f, 1f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, MeowPink);
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(1.00f, 0.20f, 0.35f, 1f));
 
-            if (ImGui.Button("Launch Game", new Vector2(screenW - 40, 50)))
+            if (ImGui.Button("Launch MeowNet", new Vector2(ImGui.GetContentRegionAvail().X, 50)))
             {
-                if (vrDetected)
-                {
-                    EnsureSteamVR();
-                    TryLaunch("vr");
-                }
-                else
-                {
-                    TryLaunch("screen");
-                }
+                if (_hasPatch) LaunchGame();
+                else { _status = "Error: WoofPatch not found!"; _isError = true; }
             }
+            
+            ImGui.PopStyleColor(3);
 
-            // EXIT BUTTON REMOVED ✔
-
-            if (!string.IsNullOrEmpty(statusMessage))
+            if (!string.IsNullOrEmpty(_status))
             {
-                ImGui.Dummy(new Vector2(0, 8));
-                var msgColor = statusIsError ? meowPink : new Vector4(0.55f, 1f, 0.55f, 1f);
-                ImGui.TextColored(msgColor, statusMessage);
+                ImGui.Dummy(new Vector2(0, 10));
+                ImGui.TextColored(_isError ? MeowPink : new Vector4(0.5f, 1f, 0.5f, 1f), _status);
             }
 
             ImGui.End();
         }
 
-        // Style
-        private static void SetupStyle()
+        private static void UpdateTitleBarStyle(bool isRunning)
+        {
+            var colors = ImGui.GetStyle().Colors;
+            float pulse = (float)(0.5f + 0.5f * Math.Sin(_animTime * 3));
+            
+            if (isRunning)
+            {
+                colors[(int)ImGuiCol.TitleBg] = new Vector4(0.1f + pulse * 0.1f, 0.4f + pulse * 0.1f, 0.1f, 1f);
+                colors[(int)ImGuiCol.TitleBgActive] = new Vector4(0.2f + pulse * 0.2f, 0.6f + pulse * 0.2f, 0.2f, 1f);
+            }
+            else
+            {
+                colors[(int)ImGuiCol.TitleBg] = new Vector4(0.4f + pulse * 0.1f, 0.1f + pulse * 0.05f, 0.1f, 1f);
+                colors[(int)ImGuiCol.TitleBgActive] = new Vector4(0.6f + pulse * 0.2f, 0.2f + pulse * 0.1f, 0.2f, 1f);
+            }
+        }
+
+        private static void ApplyMeowStyle()
         {
             ImGui.StyleColorsDark();
             var style = ImGui.GetStyle();
-            style.WindowRounding = 6f;
-            style.FrameRounding = 4f;
-            style.GrabRounding = 4f;
-            style.ItemSpacing = new Vector2(10, 8);
-            style.FramePadding = new Vector2(10, 6);
-            style.WindowPadding = new Vector2(20, 20);
+            
+            // Set to 0 for sharp, non-rounded edges
+            style.WindowRounding = 0f;
+            style.ChildRounding = 0f;
+            style.FrameRounding = 0f;
+            style.GrabRounding = 0f;
+            style.TabRounding = 0f;
 
-            var colors = style.Colors;
-            colors[(int)ImGuiCol.WindowBg] = new Vector4(0.08f, 0.08f, 0.10f, 1f);
-            colors[(int)ImGuiCol.FrameBg] = new Vector4(0.12f, 0.12f, 0.16f, 1f);
-            colors[(int)ImGuiCol.Button] = new Vector4(0.20f, 0.10f, 0.15f, 1f);
-            colors[(int)ImGuiCol.ButtonHovered] = meowPink;
-            colors[(int)ImGuiCol.ButtonActive] = new Vector4(1.00f, 0.20f, 0.35f, 1f);
-            colors[(int)ImGuiCol.Header] = new Vector4(0.20f, 0.10f, 0.15f, 1f);
-            colors[(int)ImGuiCol.HeaderHovered] = meowPink;
-            colors[(int)ImGuiCol.Separator] = meowPink;
+            style.Colors[(int)ImGuiCol.WindowBg] = new Vector4(0.08f, 0.08f, 0.10f, 1f);
+            style.Colors[(int)ImGuiCol.ButtonHovered] = MeowPink;
+            style.Colors[(int)ImGuiCol.Separator] = MeowPink;
         }
 
-        // VR Autodetect
-        private static void DetectVR()
+        private static void LaunchGame()
         {
-            if (Process.GetProcessesByName("vrserver").Length > 0 ||
-                Process.GetProcessesByName("vrcompositor").Length > 0 ||
-                Process.GetProcessesByName("OVRServer_x64").Length > 0 ||
-                Process.GetProcessesByName("MixedRealityPortal").Length > 0)
+            try 
             {
-                vrDetected = true;
-            }
-        }
-
-        // Integrity Check
-        private static void CheckIntegrity()
-        {
-            string exePath = Path.Combine(gameDir, revivalExe);
-
-            if (!File.Exists(exePath))
+                bool isVrRunning = Process.GetProcessesByName("vrserver").Length > 0 || 
+                                   Process.GetProcessesByName("OVRServer_x64").Length > 0;
+                
+                string mode = isVrRunning ? "vr" : "screen";
+                
+                Process.Start(new ProcessStartInfo(Path.Combine(_gameDir, "RecRoom.exe")) 
+                { 
+                    Arguments = $"+forcemode:{mode}", 
+                    WorkingDirectory = _gameDir 
+                });
+                _status = $"Launched in {mode.ToUpper()}! Stay pawsome.";
+                _isError = false;
+            } 
+            catch (Exception ex) 
             {
-                statusMessage = "[ERROR] RecRoom.exe missing — MeowNet install may be broken.";
-                statusIsError = true;
-            }
-        }
-
-        // SteamVR Auto‑Start
-        private static void EnsureSteamVR()
-        {
-            if (!vrDetected)
-                return;
-
-            if (Process.GetProcessesByName("vrserver").Length == 0)
-            {
-                try
-                {
-                    Process.Start("steam://rungameid/250820");
-                }
-                catch
-                {
-                    statusMessage = "Failed to auto‑start SteamVR.";
-                    statusIsError = true;
-                }
-            }
-        }
-
-        // Launch Logic
-        private static void TryLaunch(string mode)
-        {
-            string exePath = Path.Combine(gameDir, revivalExe);
-
-            if (!File.Exists(exePath))
-            {
-                statusMessage = "[ERROR] RecRoom.exe missing.";
-                statusIsError = true;
-                return;
-            }
-
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = exePath,
-                    Arguments = $"+forcemode:{mode}",
-                    UseShellExecute = true,
-                    WorkingDirectory = gameDir
-                };
-                Process.Start(psi);
-                statusMessage = $"Launched MeowNet in {mode.ToUpper()} mode.";
-                statusIsError = false;
-            }
-            catch (Exception ex)
-            {
-                statusMessage = $"Launch failed: {ex.Message}";
-                statusIsError = true;
+                _status = $"Launch error: {ex.Message}";
+                _isError = true;
             }
         }
     }

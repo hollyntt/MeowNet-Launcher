@@ -1,8 +1,9 @@
-﻿using System.Runtime.InteropServices;
+﻿using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
-namespace RecRoomLauncher
+namespace MeowNet_Launcher
 {
     public static class NativeMethods
     {
@@ -57,6 +58,7 @@ namespace RecRoomLauncher
         public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
         public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        
 #endif
     }
 }
