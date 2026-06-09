@@ -2,9 +2,11 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using ImGuiNET;
 using Raylib_cs;
 using rlImGui_cs;
@@ -22,6 +24,8 @@ namespace MeowNet_Launcher
         private static bool _isError = false;
         private static bool _hasPatch = false;
         private static bool _wasRunning = false;
+        private static bool _hasDotNet6 = false;
+        private static bool _hasVcRedist = false;
         private static float _animTime = 0f;
         private static readonly Vector4 MeowPink = new Vector4(1.00f, 0.27f, 0.43f, 1f);
 
@@ -31,6 +35,8 @@ namespace MeowNet_Launcher
             FindGameDirectory();
             RegisterVrManifest();
             _hasPatch = CheckForWoofPatch();
+            _hasDotNet6 = IsDotNet6Installed();
+            _hasVcRedist = IsVcRedistInstalled();
 
             Raylib.InitWindow(720, 520, "MeowNet Launcher");
             Raylib.SetTargetFPS(60);
@@ -75,6 +81,55 @@ namespace MeowNet_Launcher
         private static void FindGameDirectory()
         {
             _gameDir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName) ?? "";
+        }
+
+        private static bool IsDotNet6Installed()
+        {
+            string pathApp = @"C:\Program Files\dotnet\shared\Microsoft.NETCore.App";
+            string pathDesktop = @"C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App";
+
+            bool appOk = Directory.Exists(pathApp) && Directory.GetDirectories(pathApp).Any(d => Path.GetFileName(d).StartsWith("6.0."));
+            bool desktopOk = Directory.Exists(pathDesktop) && Directory.GetDirectories(pathDesktop).Any(d => Path.GetFileName(d).StartsWith("6.0."));
+
+            return appOk || desktopOk;
+        }
+
+        private static bool IsVcRedistInstalled()
+        {
+            return File.Exists(@"C:\Windows\System32\vcruntime140.dll");
+        }
+
+        private static void InstallPrerequisite(string url, string exeName, string silentArgs, string displayName)
+        {
+            _status = $"Downloading {displayName}...";
+            _isError = false;
+            try
+            {
+                string tempPath = Path.Combine(Path.GetTempPath(), exeName);
+                using (var client = new HttpClient())
+                {
+                    var response = client.GetAsync(url).Result;
+                    response.EnsureSuccessStatusCode();
+                    using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                        response.Content.CopyToAsync(fs).Wait();
+                    }
+                }
+                _status = $"Installing {displayName} silently...";
+                var psi = new ProcessStartInfo(tempPath, silentArgs)
+                {
+                    UseShellExecute = true,
+                    Verb = "runas"
+                };
+                var process = Process.Start(psi);
+                process?.WaitForExit();
+                _status = $"{displayName} successfully installed!";
+            }
+            catch (Exception ex)
+            {
+                _status = $"Failed to install {displayName}: {ex.Message}";
+                _isError = true;
+            }
         }
 
         private static bool CheckForWoofPatch()
@@ -157,7 +212,37 @@ namespace MeowNet_Launcher
             ImGui.SameLine(130);
             ImGui.TextColored(_hasPatch ? new Vector4(0.5f, 1f, 0.5f, 1f) : MeowPink, _hasPatch ? "Patch Detected" : "WoofPatch Missing!");
 
-            ImGui.Dummy(new Vector2(0, 20));
+            ImGui.Dummy(new Vector2(0, 10));
+
+            if (!_hasDotNet6)
+            {
+                ImGui.TextColored(MeowPink, "Prerequisite Missing: .NET 6.0");
+                ImGui.SameLine(250);
+                if (ImGui.Button("Auto Install .NET", new Vector2(150, 20)))
+                {
+                    Task.Run(() =>
+                    {
+                        InstallPrerequisite("https://aka.ms/dotnet/6.0/windowsdesktop-runtime-win-x64.exe", "dotnet6-installer.exe", "/install /quiet /norestart", ".NET 6.0");
+                        _hasDotNet6 = IsDotNet6Installed();
+                    });
+                }
+            }
+
+            if (!_hasVcRedist)
+            {
+                ImGui.TextColored(MeowPink, "Prerequisite Missing: VC++ Redist");
+                ImGui.SameLine(250);
+                if (ImGui.Button("Auto Install VC++", new Vector2(150, 20)))
+                {
+                    Task.Run(() =>
+                    {
+                        InstallPrerequisite("https://aka.ms/vs/17/release/vc_redist.x64.exe", "vc_redist.x64.exe", "/install /quiet /norestart", "VC++ Redistributable");
+                        _hasVcRedist = IsVcRedistInstalled();
+                    });
+                }
+            }
+
+            ImGui.Dummy(new Vector2(0, 10));
 
             if (isRunning)
             {
