@@ -6,3 +6,5 @@ but it will get there.
 
 based off:
 - https://github.com/hollyntt/RecRoom-Revival-Launcher
+
+## THIS IS NOT A OFFICIAL LAUNCHER, THIS IS A FANMADE LAUNCHER.
