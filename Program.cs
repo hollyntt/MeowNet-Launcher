@@ -26,6 +26,11 @@ namespace MeowNet_Launcher
         private static bool _wasRunning = false;
         private static bool _hasDotNet6 = false;
         private static bool _hasVcRedist = false;
+        private static bool _isUpdating = false;
+        private static bool _needsUpdate = false;
+        private static string _localVersion = "0";
+        private static string _remoteVersion = "0";
+        private static float _updateProgress = 0f;
         private static float _animTime = 0f;
         private static readonly Vector4 MeowPink = new Vector4(1.00f, 0.27f, 0.43f, 1f);
 
@@ -37,6 +42,9 @@ namespace MeowNet_Launcher
             _hasPatch = CheckForWoofPatch();
             _hasDotNet6 = IsDotNet6Installed();
             _hasVcRedist = IsVcRedistInstalled();
+            _localVersion = GetLocalVersion();
+
+            Task.Run(() => CheckForUpdates());
 
             Raylib.InitWindow(720, 520, "MeowNet Launcher");
             Raylib.SetTargetFPS(60);
@@ -83,6 +91,55 @@ namespace MeowNet_Launcher
             _gameDir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName) ?? "";
         }
 
+        private static string GetLocalVersion()
+        {
+            string versionPath = Path.Combine(_gameDir, "version.txt");
+            if (File.Exists(versionPath))
+            {
+                try
+                {
+                    return File.ReadAllText(versionPath).Trim();
+                }
+                catch { }
+            }
+            return "0";
+        }
+
+        private static void CheckForUpdates()
+        {
+            try
+            {
+                using (var client = new HttpClient())
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Head, "https://ahhhhhhhhhhhhhhhhhhh.b-cdn.net/Meow!Beta.7z");
+                    using (var response = client.Send(request))
+                    {
+                        response.EnsureSuccessStatusCode();
+                        
+                        string remoteTag = "";
+                        if (response.Headers.ETag != null)
+                        {
+                            remoteTag = response.Headers.ETag.Tag.Trim('\"');
+                        }
+                        else if (response.Content.Headers.LastModified.HasValue)
+                        {
+                            remoteTag = response.Content.Headers.LastModified.Value.UtcDateTime.Ticks.ToString();
+                        }
+
+                        if (!string.IsNullOrEmpty(remoteTag))
+                        {
+                            _remoteVersion = remoteTag;
+                            _needsUpdate = _localVersion != _remoteVersion;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                _needsUpdate = true;
+            }
+        }
+
         private static bool IsDotNet6Installed()
         {
             string pathApp = @"C:\Program Files\dotnet\shared\Microsoft.NETCore.App";
@@ -108,11 +165,14 @@ namespace MeowNet_Launcher
                 string tempPath = Path.Combine(Path.GetTempPath(), exeName);
                 using (var client = new HttpClient())
                 {
-                    var response = client.GetAsync(url).Result;
-                    response.EnsureSuccessStatusCode();
-                    using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                    using (var response = client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).Result)
                     {
-                        response.Content.CopyToAsync(fs).Wait();
+                        response.EnsureSuccessStatusCode();
+                        using (var streamToRead = response.Content.ReadAsStream())
+                        using (var streamToWrite = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                        {
+                            streamToRead.CopyTo(streamToWrite);
+                        }
                     }
                 }
                 _status = $"Installing {displayName} silently...";
@@ -258,7 +318,7 @@ namespace MeowNet_Launcher
                 {
                     if (!_hasPatch)
                     {
-                        _status = "Error: WoofPatch not found!";
+                        _status = "Error: WoofPatch not found! Try updating.";
                         _isError = true;
                     }
                     else if (!IsSteamRunning())
@@ -272,6 +332,24 @@ namespace MeowNet_Launcher
                     }
                 }
                 ImGui.PopStyleColor(2);
+            }
+
+            if (_needsUpdate && !_isUpdating)
+            {
+                ImGui.Dummy(new Vector2(0, 10));
+                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.1f, 0.2f, 0.4f, 1f));
+                ImGui.PushStyleColor(ImGuiCol.ButtonHovered, MeowPink);
+                if (ImGui.Button("Update Game", new Vector2(ImGui.GetContentRegionAvail().X, 30)))
+                {
+                    Task.Run(() => UpdateGame());
+                }
+                ImGui.PopStyleColor(2);
+            }
+
+            if (_isUpdating)
+            {
+                ImGui.Dummy(new Vector2(0, 8));
+                ImGui.ProgressBar(_updateProgress, new Vector2(ImGui.GetContentRegionAvail().X, 22), $"{(_updateProgress * 100):0.0}%");
             }
 
             ImGui.Dummy(new Vector2(0, 10));
@@ -315,6 +393,8 @@ namespace MeowNet_Launcher
             style.Colors[(int)ImGuiCol.WindowBg] = new Vector4(0.08f, 0.08f, 0.10f, 1f);
             style.Colors[(int)ImGuiCol.ButtonHovered] = MeowPink;
             style.Colors[(int)ImGuiCol.Separator] = MeowPink;
+            style.Colors[(int)ImGuiCol.PlotHistogram] = MeowPink;
+            style.Colors[(int)ImGuiCol.PlotHistogramHovered] = MeowPink;
         }
 
         private static bool IsSteamRunning()
@@ -326,6 +406,132 @@ namespace MeowNet_Launcher
         {
             foreach (var p in Process.GetProcessesByName("RecRoom")) { p.Kill(); p.WaitForExit(); }
             _status = "Rec Room closed.";
+        }
+
+        private static void CopyDirectory(string sourceDir, string targetDir)
+        {
+            Directory.CreateDirectory(targetDir);
+
+            foreach (var file in Directory.GetFiles(sourceDir))
+            {
+                string targetFile = Path.Combine(targetDir, Path.GetFileName(file));
+                try
+                {
+                    File.Copy(file, targetFile, true);
+                }
+                catch { }
+            }
+
+            foreach (var subDir in Directory.GetDirectories(sourceDir))
+            {
+                string targetSubDir = Path.Combine(targetDir, Path.GetFileName(subDir));
+                CopyDirectory(subDir, targetSubDir);
+            }
+        }
+
+        private static void SafeDeleteDirectory(string path)
+        {
+            try
+            {
+                foreach (var file in Directory.GetFiles(path, "*", SearchOption.AllDirectories))
+                {
+                    try { File.Delete(file); } catch { }
+                }
+                Directory.Delete(path, true);
+            }
+            catch { }
+        }
+
+        private static void UpdateGame()
+        {
+            if (Process.GetProcessesByName("RecRoom").Length > 0)
+            {
+                _status = "Error: Rec Room is running! Close it before updating.";
+                _isError = true;
+                return;
+            }
+
+            _isUpdating = true;
+            _updateProgress = 0f;
+            _status = "Downloading game files...";
+            _isError = false;
+            try
+            {
+                string url = "https://ahhhhhhhhhhhhhhhhhhh.b-cdn.net/Meow!Beta.7z";
+                string tempPath = Path.Combine(Path.GetTempPath(), "MeowBeta.7z");
+
+                using (var client = new HttpClient())
+                {
+                    using (var response = client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).Result)
+                    {
+                        response.EnsureSuccessStatusCode();
+                        long? totalBytes = response.Content.Headers.ContentLength;
+
+                        using (var streamToRead = response.Content.ReadAsStream())
+                        using (var streamToWrite = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                        {
+                            byte[] buffer = new byte[8192];
+                            long totalBytesRead = 0;
+                            int bytesRead;
+                            while ((bytesRead = streamToRead.Read(buffer, 0, buffer.Length)) > 0)
+                            {
+                                streamToWrite.Write(buffer, 0, bytesRead);
+                                totalBytesRead += bytesRead;
+                                if (totalBytes.HasValue && totalBytes.Value > 0)
+                                {
+                                    _updateProgress = (float)totalBytesRead / totalBytes.Value;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                _status = "Extracting game files...";
+                _updateProgress = 1f;
+
+                var psi = new ProcessStartInfo("tar", $"-xf \"{tempPath}\" -C \"{_gameDir}\"")
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                };
+
+                var process = Process.Start(psi);
+                process?.WaitForExit();
+
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+
+                foreach (var subDir in Directory.GetDirectories(_gameDir))
+                {
+                    if (File.Exists(Path.Combine(subDir, "RecRoom.exe")) || Directory.Exists(Path.Combine(subDir, "BepInEx")))
+                    {
+                        _status = "Merging extracted files...";
+                        CopyDirectory(subDir, _gameDir);
+                        SafeDeleteDirectory(subDir);
+                        break;
+                    }
+                }
+
+                string versionPath = Path.Combine(_gameDir, "version.txt");
+                File.WriteAllText(versionPath, _remoteVersion);
+                _localVersion = _remoteVersion;
+                _needsUpdate = false;
+
+                _hasPatch = CheckForWoofPatch();
+                _status = "Game updated successfully!";
+                _isError = false;
+            }
+            catch (Exception ex)
+            {
+                _status = $"Update failed: {ex.Message}";
+                _isError = true;
+            }
+            finally
+            {
+                _isUpdating = false;
+            }
         }
 
         private static void LaunchGame()
